@@ -30,20 +30,25 @@ export function CreateJobDialog({
   onSubmit,
 }: CreateJobDialogProps) {
   const [caseName, setCaseName] = useState("");
-  const [duration, setDuration] = useState(60);
+  const [durationInput, setDurationInput] = useState("60");
   const [locationType, setLocationType] = useState<LocationType>("REMOTE");
   const [city, setCity] = useState("");
+  const duration = Number(durationInput);
+  const durationError =
+    durationInput.length > 0 && (!Number.isInteger(duration) || duration <= 0);
 
   useEffect(() => {
     if (!open) return;
     setCaseName("");
-    setDuration(60);
+    setDurationInput("60");
     setLocationType("REMOTE");
     setCity("");
   }, [open]);
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (durationError || !durationInput) return;
+
     onSubmit({
       caseName,
       duration,
@@ -72,10 +77,14 @@ export function CreateJobDialog({
           />
           <TextField
             label="Duration"
-            type="number"
-            value={duration}
-            onChange={(event) => setDuration(Number(event.target.value))}
-            inputProps={{ min: 1 }}
+            value={durationInput}
+            onChange={(event) => {
+              const digitsOnly = event.target.value.replace(/\D/g, "");
+              setDurationInput(digitsOnly.replace(/^0+(?=\d)/, ""));
+            }}
+            inputMode="numeric"
+            error={durationError}
+            helperText={durationError ? "Duration must be at least 1 minute." : ""}
             required
             fullWidth
           />

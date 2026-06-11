@@ -22,13 +22,19 @@ export class ApiError extends Error {
 }
 
 export const authStorage = {
+  tokenKey: "court-workflow-token",
+  userKey: "court-workflow-user",
+  storage() {
+    if (typeof window === "undefined") return null;
+    return window.localStorage;
+  },
   getToken() {
     if (typeof window === "undefined") return null;
-    return window.localStorage.getItem("court-workflow-token");
+    return this.storage()?.getItem(this.tokenKey) ?? null;
   },
   getUser() {
     if (typeof window === "undefined") return null;
-    const rawUser = window.localStorage.getItem("court-workflow-user");
+    const rawUser = this.storage()?.getItem(this.userKey);
     if (!rawUser) return null;
 
     try {
@@ -38,12 +44,12 @@ export const authStorage = {
     }
   },
   setAuth(token: string, user: AuthUser) {
-    window.localStorage.setItem("court-workflow-token", token);
-    window.localStorage.setItem("court-workflow-user", JSON.stringify(user));
+    window.localStorage.setItem(this.tokenKey, token);
+    window.localStorage.setItem(this.userKey, JSON.stringify(user));
   },
   clear() {
-    window.localStorage.removeItem("court-workflow-token");
-    window.localStorage.removeItem("court-workflow-user");
+    window.localStorage.removeItem(this.tokenKey);
+    window.localStorage.removeItem(this.userKey);
   },
 };
 
