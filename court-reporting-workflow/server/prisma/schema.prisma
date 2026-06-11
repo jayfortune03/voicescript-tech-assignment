@@ -50,6 +50,8 @@ model Job {
   editor   User?     @relation("EditorJobs", fields: [editorId], references: [id])
   payments Payment[]
 
+  version Int @default(1)
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
