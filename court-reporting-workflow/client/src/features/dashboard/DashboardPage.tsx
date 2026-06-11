@@ -8,6 +8,7 @@ import {
   Logout,
   Paid,
   RateReview,
+  Search,
   Sync,
 } from "@mui/icons-material";
 import {
@@ -30,6 +31,8 @@ import {
   TableContainer,
   TableHead,
   TableRow,
+  TableSortLabel,
+  TextField,
   Tooltip,
   Typography,
 } from "@mui/material";
@@ -76,6 +79,16 @@ const statusColors: Record<
   REVIEWED: "secondary",
   COMPLETED: "success",
 };
+
+type SortDirection = "asc" | "desc";
+type JobSortKey =
+  | "caseName"
+  | "status"
+  | "location"
+  | "duration"
+  | "reporter"
+  | "editor"
+  | "payout";
 
 function getNextStatus(job: Job): JobStatus | null {
   if (job.status === "ASSIGNED") return "TRANSCRIBED";
@@ -136,25 +149,30 @@ function getRolePayout(job: Job, authUser: AuthUser) {
 }
 
 export function DashboardPage() {
-  const [authUser, setAuthUser] = useState<AuthUser | null>(() => {
-    if (typeof window === "undefined" || !authStorage.getToken()) return null;
-    return authStorage.getUser();
-  });
+  const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [statusFilter, setStatusFilter] = useState<JobStatus | "ALL">("ALL");
   const [createOpen, setCreateOpen] = useState(false);
   const [assignReporterJob, setAssignReporterJob] = useState<Job | null>(null);
   const [assignEditorJob, setAssignEditorJob] = useState<Job | null>(null);
+  const [jobSearch, setJobSearch] = useState("");
+  const [sortKey, setSortKey] = useState<JobSortKey>("caseName");
+  const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
   const [error, setError] = useState<string | null>(null);
   const [realtimeStatus, setRealtimeStatus] = useState<
-    "connecting" | "connected" | "disconnected"
+    "connecting" | "connected" | "disconnected" | "idle" | "refresh_required"
   >("connecting");
   const [lastRealtimeAt, setLastRealtimeAt] = useState<Date | null>(null);
   const queryClient = useQueryClient();
   const isAdmin = authUser?.role === "ADMIN";
 
+  useEffect(() => {
+    if (!authStorage.getToken()) return;
+    setAuthUser(authStorage.getUser());
+  }, []);
+
   const jobsQuery = useQuery({
-    queryKey: ["jobs", statusFilter],
-    queryFn: () => api.getJobs(statusFilter),
+    queryKey: ["jobs", isAdmin ? statusFilter : "ALL"],
+    queryFn: () => api.getJobs(isAdmin ? statusFilter : "ALL"),
     enabled: Boolean(authUser),
   });
 
@@ -178,29 +196,120 @@ export function DashboardPage() {
 
     setRealtimeStatus("connecting");
     const socketPromise = import("socket.io-client").then(({ io }) => {
-      const socket = io(SOCKET_URL);
-
-      socket.on("connect", () => {
-        setRealtimeStatus("connected");
-      });
-
-      socket.on("disconnect", () => {
-        setRealtimeStatus("disconnected");
-      });
-
-      socket.on("jobUpdated", () => {
-        setLastRealtimeAt(new Date());
+      const refreshRealtimeData = () => {
         void Promise.all([
           queryClient.invalidateQueries({ queryKey: ["jobs"] }),
           queryClient.invalidateQueries({ queryKey: ["users"] }),
         ]);
+      };
+
+      let refreshRequired = false;
+      let idleTimer: number | null = null;
+
+      const socket = io(SOCKET_URL, {
+        autoConnect: true,
+        reconnection: true,
+        reconnectionAttempts: 3,
+        reconnectionDelay: 1000,
+        reconnectionDelayMax: 5000,
+        timeout: 10000,
+        transports: ["websocket", "polling"],
       });
 
-      return socket;
+      const resetIdleTimer = () => {
+        if (idleTimer) {
+          window.clearTimeout(idleTimer);
+        }
+
+        idleTimer = window.setTimeout(
+          () => {
+            if (socket.connected) {
+              socket.disconnect();
+            }
+            setRealtimeStatus("idle");
+          },
+          5 * 60 * 1000,
+        );
+      };
+
+      const handleActivity = () => {
+        resetIdleTimer();
+
+        if (refreshRequired) return;
+        if (!socket.connected) {
+          setRealtimeStatus("connecting");
+          socket.connect();
+        }
+      };
+
+      socket.on("connect", () => {
+        refreshRequired = false;
+        setRealtimeStatus("connected");
+        resetIdleTimer();
+        refreshRealtimeData();
+      });
+
+      socket.on("disconnect", () => {
+        if (!refreshRequired) {
+          setRealtimeStatus("disconnected");
+        }
+      });
+
+      socket.on("connect_error", () => {
+        if (!refreshRequired) {
+          setRealtimeStatus("disconnected");
+        }
+      });
+
+      socket.io.on("reconnect_attempt", () => {
+        setRealtimeStatus("connecting");
+      });
+
+      socket.io.on("reconnect", () => {
+        refreshRequired = false;
+        setRealtimeStatus("connected");
+        setLastRealtimeAt(new Date());
+        resetIdleTimer();
+        refreshRealtimeData();
+      });
+
+      socket.io.on("reconnect_failed", () => {
+        refreshRequired = true;
+        setRealtimeStatus("refresh_required");
+      });
+
+      socket.on("jobUpdated", () => {
+        setLastRealtimeAt(new Date());
+        resetIdleTimer();
+        refreshRealtimeData();
+      });
+
+      window.addEventListener("pointerdown", handleActivity);
+      window.addEventListener("keydown", handleActivity);
+      window.addEventListener("focus", handleActivity);
+      document.addEventListener("visibilitychange", handleActivity);
+      resetIdleTimer();
+
+      socket.on("disconnect", () => {
+        if (idleTimer) {
+          window.clearTimeout(idleTimer);
+        }
+      });
+
+      return () => {
+        window.removeEventListener("pointerdown", handleActivity);
+        window.removeEventListener("keydown", handleActivity);
+        window.removeEventListener("focus", handleActivity);
+        document.removeEventListener("visibilitychange", handleActivity);
+        if (idleTimer) {
+          window.clearTimeout(idleTimer);
+        }
+        socket.disconnect();
+      };
     });
 
     return () => {
-      void socketPromise.then((socket) => socket.disconnect());
+      void socketPromise.then((cleanupSocket) => cleanupSocket());
     };
   }, [authUser, queryClient]);
 
@@ -274,24 +383,34 @@ export function DashboardPage() {
     }
     return [];
   }, [authUser, rawJobs]);
+  const reporterUsers = reportersQuery.data ?? [];
+  const editorUsers = editorsQuery.data ?? [];
   const reportersById = useMemo(
-    () => new Map((reportersQuery.data ?? []).map((user) => [user.id, user])),
-    [reportersQuery.data],
+    () => new Map(reporterUsers.map((user) => [user.id, user])),
+    [reporterUsers],
   );
   const editorsById = useMemo(
-    () => new Map((editorsQuery.data ?? []).map((user) => [user.id, user])),
-    [editorsQuery.data],
+    () => new Map(editorUsers.map((user) => [user.id, user])),
+    [editorUsers],
   );
-  const users = [...(reportersQuery.data ?? []), ...(editorsQuery.data ?? [])];
+  const users = [...reporterUsers, ...editorUsers];
 
   const handleLogout = () => {
     authStorage.clear();
+    setStatusFilter("ALL");
     setAuthUser(null);
     queryClient.clear();
   };
 
   if (!authUser) {
-    return <LoginPanel onLogin={setAuthUser} />;
+    return (
+      <LoginPanel
+        onLogin={(user) => {
+          setStatusFilter("ALL");
+          setAuthUser(user);
+        }}
+      />
+    );
   }
 
   const totalEstimatedPayout = jobs.reduce(
@@ -299,15 +418,104 @@ export function DashboardPage() {
     0,
   );
   const activeJobs = jobs.filter((job) => job.status !== "COMPLETED").length;
+  const completedJobs = jobs.filter((job) => job.status === "COMPLETED").length;
+  const pendingActionJobs = jobs.filter((job) => canAdvanceStatus(job, authUser)).length;
+  const reporterEarnings = jobs.reduce(
+    (sum, job) => sum + calculateJobPayout(job).reporterAmount,
+    0,
+  );
+  const editorEarnings = jobs.reduce(
+    (sum, job) => sum + calculateJobPayout(job).editorAmount,
+    0,
+  );
   const availableUsers = users.filter((user) => user.isAvailable).length;
+  const firstJobCardLabel =
+    authUser.role === "ADMIN"
+      ? "Visible jobs"
+      : authUser.role === "REPORTER"
+        ? "My reporting jobs"
+        : "My review jobs";
+  const secondJobCardLabel =
+    authUser.role === "ADMIN" ? "Active jobs" : "Needs my action";
+  const secondJobCardValue =
+    authUser.role === "ADMIN" ? activeJobs : pendingActionJobs;
   const realtimeLabel =
     realtimeStatus === "connected"
-      ? lastRealtimeAt
-        ? `Live - updated ${lastRealtimeAt.toLocaleTimeString()}`
-        : "Live"
+      ? "Live"
       : realtimeStatus === "connecting"
         ? "Connecting"
-        : "Offline";
+        : realtimeStatus === "idle"
+          ? "Idle"
+          : realtimeStatus === "refresh_required"
+            ? "Refresh required"
+            : "Offline";
+  const realtimeTooltip =
+    realtimeStatus === "connected"
+      ? lastRealtimeAt
+        ? `Connected. Last realtime update: ${lastRealtimeAt.toLocaleTimeString()}`
+        : "Connected. Waiting for realtime updates."
+      : realtimeStatus === "idle"
+        ? "Disconnected after 5 minutes of inactivity. Interact with the page to reconnect."
+        : realtimeStatus === "refresh_required"
+          ? "Realtime reconnect failed after 3 attempts. Refresh the page."
+          : "Realtime connection is not active.";
+  const normalizedSearch = jobSearch.trim().toLowerCase();
+  const getJobSortValue = (job: Job, key: JobSortKey): string | number => {
+    if (key === "caseName") return job.caseName.toLowerCase();
+    if (key === "status") return statusLabels[job.status];
+    if (key === "location") {
+      return job.locationType === "PHYSICAL"
+        ? `physical ${job.city ?? ""}`.toLowerCase()
+        : "remote";
+    }
+    if (key === "duration") return job.duration;
+    if (key === "reporter") {
+      return getAssignmentName(job.reporterId, reportersById, authUser).toLowerCase();
+    }
+    if (key === "editor") {
+      return getAssignmentName(job.editorId, editorsById, authUser).toLowerCase();
+    }
+    return getRolePayout(job, authUser).primaryAmount;
+  };
+  const displayedJobs = jobs
+    .filter((job) => {
+      if (!normalizedSearch) return true;
+
+      const haystack = [
+        job.caseName,
+        job.status,
+        statusLabels[job.status],
+        job.locationType,
+        job.city ?? "",
+        String(job.duration),
+        getAssignmentName(job.reporterId, reportersById, authUser),
+        getAssignmentName(job.editorId, editorsById, authUser),
+      ]
+        .join(" ")
+        .toLowerCase();
+
+      return haystack.includes(normalizedSearch);
+    })
+    .sort((a, b) => {
+      const aValue = getJobSortValue(a, sortKey);
+      const bValue = getJobSortValue(b, sortKey);
+      const directionMultiplier = sortDirection === "asc" ? 1 : -1;
+
+      if (typeof aValue === "number" && typeof bValue === "number") {
+        return (aValue - bValue) * directionMultiplier;
+      }
+
+      return String(aValue).localeCompare(String(bValue)) * directionMultiplier;
+    });
+  const handleSort = (key: JobSortKey) => {
+    if (sortKey === key) {
+      setSortDirection((current) => (current === "asc" ? "desc" : "asc"));
+      return;
+    }
+
+    setSortKey(key);
+    setSortDirection("asc");
+  };
 
   return (
     <Box sx={{ minHeight: "100vh", bgcolor: "background.default" }}>
@@ -343,12 +551,20 @@ export function DashboardPage() {
                   New job
                 </Button>
               ) : null}
-              <Chip
-                label={realtimeLabel}
-                color={realtimeStatus === "connected" ? "success" : "default"}
-                variant={realtimeStatus === "connected" ? "filled" : "outlined"}
-                sx={{ alignSelf: "center" }}
-              />
+              <Tooltip title={realtimeTooltip}>
+                <Chip
+                  label={realtimeLabel}
+                  color={
+                    realtimeStatus === "connected"
+                      ? "success"
+                      : realtimeStatus === "refresh_required"
+                        ? "warning"
+                        : "default"
+                  }
+                  variant={realtimeStatus === "connected" ? "filled" : "outlined"}
+                  sx={{ alignSelf: "center" }}
+                />
+              </Tooltip>
               <Tooltip title="Refresh">
                 <IconButton onClick={() => void invalidateDashboard()}>
                   <Sync />
@@ -372,29 +588,59 @@ export function DashboardPage() {
             alignItems={{ xs: "stretch", md: "center" }}
             justifyContent="space-between"
           >
-            <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
-              <Paper variant="outlined" sx={{ p: 2, minWidth: 180 }}>
+            <Box
+              sx={{
+                display: "grid",
+                gridTemplateColumns: {
+                  xs: "1fr",
+                  sm: "repeat(2, minmax(0, 1fr))",
+                  lg: isAdmin
+                    ? "repeat(4, minmax(0, 1fr))"
+                    : "repeat(4, minmax(0, 1fr))",
+                },
+                gap: 2,
+                width: "100%",
+              }}
+            >
+              <Paper variant="outlined" sx={{ p: 2, minWidth: 0 }}>
                 <Typography variant="body2" color="text.secondary">
-                  Visible jobs
+                  {firstJobCardLabel}
                 </Typography>
                 <Typography variant="h4">{jobs.length}</Typography>
               </Paper>
-              <Paper variant="outlined" sx={{ p: 2, minWidth: 180 }}>
+              <Paper variant="outlined" sx={{ p: 2, minWidth: 0 }}>
                 <Typography variant="body2" color="text.secondary">
-                  Active jobs
+                  {secondJobCardLabel}
                 </Typography>
-                <Typography variant="h4">{activeJobs}</Typography>
+                <Typography variant="h4">{secondJobCardValue}</Typography>
               </Paper>
-              <Paper variant="outlined" sx={{ p: 2, minWidth: 220 }}>
+              {!isAdmin ? (
+                <Paper variant="outlined" sx={{ p: 2, minWidth: 0 }}>
+                  <Typography variant="body2" color="text.secondary">
+                    Completed jobs
+                  </Typography>
+                  <Typography variant="h4">{completedJobs}</Typography>
+                </Paper>
+              ) : null}
+              <Paper variant="outlined" sx={{ p: 2, minWidth: 0 }}>
                 <Typography variant="body2" color="text.secondary">
                   {isAdmin ? "Estimated payout" : "My estimated earnings"}
                 </Typography>
                 <Typography variant="h4">
                   {moneyFormatter.format(totalEstimatedPayout)}
                 </Typography>
+                <Typography variant="caption" color="text.secondary">
+                  {isAdmin
+                    ? `Reporter ${moneyFormatter.format(
+                        reporterEarnings,
+                      )}, editor ${moneyFormatter.format(editorEarnings)}`
+                    : authUser.role === "REPORTER"
+                      ? `${moneyFormatter.format(2000)} per minute`
+                      : `${moneyFormatter.format(50000)} flat review fee`}
+                </Typography>
               </Paper>
               {isAdmin ? (
-                <Paper variant="outlined" sx={{ p: 2, minWidth: 180 }}>
+                <Paper variant="outlined" sx={{ p: 2, minWidth: 0 }}>
                   <Typography variant="body2" color="text.secondary">
                     Available staff
                   </Typography>
@@ -403,25 +649,7 @@ export function DashboardPage() {
                   </Typography>
                 </Paper>
               ) : null}
-            </Stack>
-
-            <FormControl sx={{ minWidth: 220 }}>
-              <InputLabel id="status-filter-label">Status</InputLabel>
-              <Select
-                labelId="status-filter-label"
-                label="Status"
-                value={statusFilter}
-                onChange={(event) =>
-                  setStatusFilter(event.target.value as JobStatus | "ALL")
-                }
-              >
-                {statuses.map((status) => (
-                  <MenuItem key={status} value={status}>
-                    {status === "ALL" ? "All statuses" : statusLabels[status]}
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
+            </Box>
           </Stack>
 
           {error ? (
@@ -435,57 +663,133 @@ export function DashboardPage() {
           ) : null}
 
           {isAdmin ? (
-            <TableContainer component={Paper} variant="outlined">
-              <Table size="small">
-                <TableHead>
-                  <TableRow>
-                    <TableCell>User</TableCell>
-                    <TableCell>Role</TableCell>
-                    <TableCell>City</TableCell>
-                    <TableCell>Availability</TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {users.map((user) => (
-                    <TableRow key={user.id} hover>
-                      <TableCell>
-                        <Typography fontWeight={700}>{user.name}</Typography>
-                        <Typography variant="caption" color="text.secondary">
-                          {user.email}
-                        </Typography>
-                      </TableCell>
-                      <TableCell>{user.role}</TableCell>
-                      <TableCell>{user.city ?? "-"}</TableCell>
-                      <TableCell>
-                        <Chip
-                          size="small"
-                          color={user.isAvailable ? "success" : "warning"}
-                          label={user.isAvailable ? "Available" : "Busy"}
-                        />
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </TableContainer>
+            <Box
+              sx={{
+                display: "grid",
+                gridTemplateColumns: { xs: "1fr", lg: "repeat(2, minmax(0, 1fr))" },
+                gap: 2,
+              }}
+            >
+              {[
+                { title: "Reporters", rows: reporterUsers },
+                { title: "Editors", rows: editorUsers },
+              ].map((section) => (
+                <TableContainer key={section.title} component={Paper} variant="outlined">
+                  <Box sx={{ p: 2, borderBottom: 1, borderColor: "divider" }}>
+                    <Typography variant="h6">{section.title}</Typography>
+                    <Typography variant="body2" color="text.secondary">
+                      Availability by city
+                    </Typography>
+                  </Box>
+                  <Table size="small">
+                    <TableHead>
+                      <TableRow>
+                        <TableCell>User</TableCell>
+                        <TableCell>City</TableCell>
+                        <TableCell>Availability</TableCell>
+                      </TableRow>
+                    </TableHead>
+                    <TableBody>
+                      {section.rows.map((user) => (
+                        <TableRow key={user.id} hover>
+                          <TableCell>
+                            <Typography fontWeight={700}>{user.name}</Typography>
+                            <Typography variant="caption" color="text.secondary">
+                              {user.email}
+                            </Typography>
+                          </TableCell>
+                          <TableCell>{user.city ?? "-"}</TableCell>
+                          <TableCell>
+                            <Chip
+                              size="small"
+                              color={user.isAvailable ? "success" : "warning"}
+                              label={user.isAvailable ? "Available" : "Busy"}
+                            />
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </TableContainer>
+              ))}
+            </Box>
           ) : null}
 
           <TableContainer component={Paper} variant="outlined">
+            <Stack
+              direction={{ xs: "column", sm: "row" }}
+              spacing={2}
+              alignItems={{ xs: "stretch", sm: "center" }}
+              justifyContent="space-between"
+              sx={{ p: 2, borderBottom: 1, borderColor: "divider" }}
+            >
+              <Box>
+                <Typography variant="h6">Jobs</Typography>
+                <Typography variant="body2" color="text.secondary">
+                  {isAdmin
+                    ? "Filter and manage all workflow jobs."
+                    : "Assigned work for your role."}
+                </Typography>
+              </Box>
+              <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
+                <TextField
+                  size="small"
+                  label="Search jobs"
+                  value={jobSearch}
+                  onChange={(event) => setJobSearch(event.target.value)}
+                  InputProps={{
+                    startAdornment: <Search fontSize="small" sx={{ mr: 1 }} />,
+                  }}
+                  sx={{ minWidth: { xs: "100%", sm: 240 } }}
+                />
+                {isAdmin ? (
+                  <FormControl size="small" sx={{ minWidth: 220 }}>
+                    <InputLabel id="status-filter-label">Status</InputLabel>
+                    <Select
+                      labelId="status-filter-label"
+                      label="Status"
+                      value={statusFilter}
+                      onChange={(event) =>
+                        setStatusFilter(event.target.value as JobStatus | "ALL")
+                      }
+                    >
+                      {statuses.map((status) => (
+                        <MenuItem key={status} value={status}>
+                          {status === "ALL" ? "All statuses" : statusLabels[status]}
+                        </MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
+                ) : null}
+              </Stack>
+            </Stack>
             <Table size="medium">
               <TableHead>
                 <TableRow>
-                  <TableCell>Case</TableCell>
-                  <TableCell>Status</TableCell>
-                  <TableCell>Location</TableCell>
-                  <TableCell>Duration</TableCell>
-                  <TableCell>Reporter</TableCell>
-                  <TableCell>Editor</TableCell>
-                  <TableCell>Payout</TableCell>
+                  {[
+                    ["caseName", "Case"],
+                    ["status", "Status"],
+                    ["location", "Location"],
+                    ["duration", "Duration"],
+                    ["reporter", "Reporter"],
+                    ["editor", "Editor"],
+                    ["payout", "Payout"],
+                  ].map(([key, label]) => (
+                    <TableCell key={key}>
+                      <TableSortLabel
+                        active={sortKey === key}
+                        direction={sortKey === key ? sortDirection : "asc"}
+                        onClick={() => handleSort(key as JobSortKey)}
+                      >
+                        {label}
+                      </TableSortLabel>
+                    </TableCell>
+                  ))}
                   <TableCell align="right">Actions</TableCell>
                 </TableRow>
               </TableHead>
               <TableBody>
-                {jobs.map((job) => {
+                {displayedJobs.map((job) => {
                   const payout = getRolePayout(job, authUser);
                   const nextStatus = getNextStatus(job);
                   const canAdvance = authUser
@@ -598,13 +902,13 @@ export function DashboardPage() {
                   );
                 })}
 
-                {!jobsQuery.isLoading && jobs.length === 0 ? (
+                {!jobsQuery.isLoading && displayedJobs.length === 0 ? (
                   <TableRow>
                     <TableCell colSpan={8}>
                       <Box sx={{ py: 6, textAlign: "center" }}>
                         <Typography variant="h6">No jobs found</Typography>
                         <Typography color="text.secondary">
-                          Create a job or change the status filter.
+                          Create a job or adjust the search/filter.
                         </Typography>
                       </Box>
                     </TableCell>

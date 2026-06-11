@@ -47,6 +47,8 @@ edit3@app.com / password123
 - Status and payment actions from the job table
 - Admin staff availability table for reporters and editors
 - Socket.IO listener for backend `jobUpdated` events, shown by the dashboard `Live` indicator
+- Realtime reconnects up to 3 times, then asks the user to refresh if the connection cannot recover
+- Idle clients disconnect after 5 minutes and reconnect on user activity
 
 ## Role Behavior
 
@@ -56,6 +58,7 @@ edit3@app.com / password123
 - Admin sees total per-job payout. Reporters and editors see their own per-job earnings.
 - Reporters become available again after marking a job transcribed.
 - Editors become available again after marking a job reviewed.
+- Login state is stored in `localStorage`, so tabs in the same browser profile share the same session. Use separate browsers or separate Chrome profiles to test multiple roles at the same time.
 
 Status updates send the job `version` with the request. The backend checks that version before updating so two users cannot safely apply conflicting updates from stale job data.
 

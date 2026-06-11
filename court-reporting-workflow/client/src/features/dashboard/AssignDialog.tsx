@@ -2,7 +2,6 @@
 
 import { useMemo, useState } from "react";
 import {
-  Alert,
   Button,
   Chip,
   Dialog,
@@ -71,12 +70,6 @@ export function AssignDialog({
       <DialogTitle>{title}</DialogTitle>
       <DialogContent>
         <Stack spacing={2} sx={{ pt: 1 }}>
-          {job ? (
-            <Alert severity="info">
-              {job.caseName} is currently {job.status}. Version {job.version}
-              will be sent with the assignment request.
-            </Alert>
-          ) : null}
           <Typography color="text.secondary">{helper}</Typography>
           <FormControl fullWidth>
             <InputLabel id="assign-user-label">User</InputLabel>
