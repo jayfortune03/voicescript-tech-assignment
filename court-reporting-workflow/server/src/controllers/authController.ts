@@ -20,7 +20,15 @@ export const login = async (
     }
 
     const token = generateToken({ userId: user.id, role: user.role });
-    res.json({ token, user: { id: user.id, role: user.role } });
+    res.json({
+      token,
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+      },
+    });
   } catch (error) {
     next(error);
   }

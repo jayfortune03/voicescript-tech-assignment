@@ -34,7 +34,7 @@ router.post(
 router.patch(
   "/:jobId/status",
   authenticate,
-  authorize(["ADMIN", "EDITOR"]),
+  authorize(["ADMIN", "REPORTER", "EDITOR"]),
   updateStatus,
 );
 

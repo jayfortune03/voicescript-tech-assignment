@@ -4,6 +4,8 @@ import { Server } from "socket.io";
 import cors from "cors";
 import dotenv from "dotenv";
 import jobRoutes from "./routes/jobRoutes.js";
+import authRoutes from "./routes/authRoutes.js";
+import userRoutes from "./routes/userRoutes.js";
 import { logger } from "./middlewares/logger.js";
 import { errorHandler } from "./middlewares/errorHandler.js";
 
@@ -23,7 +25,9 @@ app.use(cors());
 app.use(express.json());
 
 app.use(logger);
+app.use("/api/auth", authRoutes);
 app.use("/api/jobs", jobRoutes);
+app.use("/api/users", userRoutes);
 app.use(errorHandler);
 
 // Socket.io connection listener

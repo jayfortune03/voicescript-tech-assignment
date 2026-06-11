@@ -28,11 +28,15 @@ export const createJob = async (
     const { caseName, duration, locationType, city } = createJobSchema.parse(
       req.body,
     );
+    if (locationType === "PHYSICAL" && !city?.trim()) {
+      throw new ApiError(400, "City is required for physical jobs.");
+    }
+
     const job = await jobService.createNewJob(
       caseName,
       duration,
       locationType,
-      city,
+      city?.trim() || null,
     );
     res.status(201).json(job);
   } catch (error) {
@@ -86,6 +90,15 @@ export const assignReporter = async (
         new ApiError(409, "Conflict: This job has already been claimed."),
       );
     }
+    if (error.message === "NOT_FOUND") {
+      return next(new ApiError(404, "Job or reporter was not found."));
+    }
+    if (error.message === "JOB_ALREADY_TAKEN") {
+      return next(new ApiError(409, "This job already has a reporter."));
+    }
+    if (error.message === "REPORTER_UNAVAILABLE") {
+      return next(new ApiError(400, "Reporter is not available."));
+    }
     next(error);
   }
 };
@@ -121,6 +134,17 @@ export const assignEditor = async (
         ),
       );
     }
+    if (error.message === "EDITOR_UNAVAILABLE") {
+      return next(new ApiError(400, "Editor is not available."));
+    }
+    if (error.message === "CONCURRENCY_CONFLICT_OR_INVALID_STATUS") {
+      return next(
+        new ApiError(
+          409,
+          "Editor can only be assigned after the job is transcribed.",
+        ),
+      );
+    }
     next(error);
   }
 };
@@ -132,13 +156,40 @@ export const updateStatus = async (
 ) => {
   try {
     const { jobId } = jobIdSchema.parse(req.params);
-    const { status } = req.body;
+    const { status, version } = req.body;
 
     if (!status) throw new ApiError(400, "Status is required.");
+    if (typeof version !== "number") {
+      throw new ApiError(400, "Version is required.");
+    }
 
-    const updatedJob = await jobService.updateJobStatus(jobId, status);
+    const updatedJob = await jobService.updateJobStatus(
+      jobId,
+      status,
+      version,
+      req.user!,
+    );
     res.status(200).json(updatedJob);
-  } catch (error) {
+  } catch (error: any) {
+    if (error.message === "NOT_FOUND") {
+      return next(new ApiError(404, "Job was not found."));
+    }
+    if (error.message === "INVALID_TRANSITION") {
+      return next(new ApiError(400, "Invalid status transition."));
+    }
+    if (error.message === "FORBIDDEN_STATUS_UPDATE") {
+      return next(
+        new ApiError(403, "You cannot update this job for your current role."),
+      );
+    }
+    if (error.message === "CONCURRENCY_CONFLICT_OR_INVALID_STATUS") {
+      return next(
+        new ApiError(
+          409,
+          "Job was changed by someone else. Refresh and try again.",
+        ),
+      );
+    }
     next(error);
   }
 };
@@ -152,7 +203,12 @@ export const processPayment = async (
     const { jobId } = jobIdSchema.parse(req.params);
     const result = await jobService.calculateAndSavePayment(jobId);
     res.status(200).json(result);
-  } catch (error) {
+  } catch (error: any) {
+    if (error.message === "JOB_NOT_REVIEWED") {
+      return next(
+        new ApiError(400, "Payment can only be processed after review."),
+      );
+    }
     next(error);
   }
 };

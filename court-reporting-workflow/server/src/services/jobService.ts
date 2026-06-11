@@ -47,10 +47,6 @@ export const assignReporterToJob = async (
       throw new Error("REPORTER_UNAVAILABLE");
     }
 
-    if (job.locationType === "PHYSICAL" && job.city !== reporter.city) {
-      throw new Error("CITY_MISMATCH");
-    }
-
     const updatedJob = await t.oneOrNone(
       `UPDATE "Job" 
        SET "reporterId" = $1, status = 'ASSIGNED', "updatedAt" = NOW(), version = version + 1
@@ -100,11 +96,64 @@ export const assignEditorToJob = async (
   });
 };
 
-export const updateJobStatus = async (jobId: string, status: string) => {
-  const updatedJob = await db.one(
-    `UPDATE "Job" SET status = $1, "updatedAt" = NOW() WHERE id = $2 RETURNING *`,
-    [status, jobId],
+const allowedTransitions: Record<string, string[]> = {
+  ASSIGNED: ["TRANSCRIBED"],
+  IN_REVIEW: ["REVIEWED"],
+};
+
+export const updateJobStatus = async (
+  jobId: string,
+  status: string,
+  currentVersion: number,
+  actor: { userId: string; role: string },
+) => {
+  const job = await db.oneOrNone(`SELECT * FROM "Job" WHERE id = $1`, [jobId]);
+
+  if (!job) throw new Error("NOT_FOUND");
+  if (!allowedTransitions[job.status]?.includes(status)) {
+    throw new Error("INVALID_TRANSITION");
+  }
+
+  const isAdmin = actor.role === "ADMIN";
+  const isAssignedReporter =
+    actor.role === "REPORTER" &&
+    job.reporterId === actor.userId &&
+    job.status === "ASSIGNED" &&
+    status === "TRANSCRIBED";
+  const isAssignedEditor =
+    actor.role === "EDITOR" &&
+    job.editorId === actor.userId &&
+    job.status === "IN_REVIEW" &&
+    status === "REVIEWED";
+
+  if (!isAdmin && !isAssignedReporter && !isAssignedEditor) {
+    throw new Error("FORBIDDEN_STATUS_UPDATE");
+  }
+
+  const updatedJob = await db.oneOrNone(
+    `UPDATE "Job"
+     SET status = $1, "updatedAt" = NOW(), version = version + 1
+     WHERE id = $2 AND status = $3 AND version = $4
+     RETURNING *`,
+    [status, jobId, job.status, currentVersion],
   );
+
+  if (!updatedJob) {
+    throw new Error("CONCURRENCY_CONFLICT_OR_INVALID_STATUS");
+  }
+
+  if (status === "TRANSCRIBED" && job.reporterId) {
+    await db.none(`UPDATE "User" SET "isAvailable" = true WHERE id = $1`, [
+      job.reporterId,
+    ]);
+  }
+
+  if (status === "REVIEWED" && job.editorId) {
+    await db.none(`UPDATE "User" SET "isAvailable" = true WHERE id = $1`, [
+      job.editorId,
+    ]);
+  }
+
   io.emit("jobUpdated", { action: "STATUS_UPDATED", job: updatedJob });
   return updatedJob;
 };
