@@ -8,18 +8,20 @@ import authRoutes from "./routes/authRoutes.js";
 import userRoutes from "./routes/userRoutes.js";
 import { logger } from "./middlewares/logger.js";
 import { errorHandler } from "./middlewares/errorHandler.js";
+import { setRealtimeServer } from "./realtime/events.js";
 
 dotenv.config();
 
 const app = express();
 const httpServer = createServer(app);
 
-export const io = new Server(httpServer, {
+const io = new Server(httpServer, {
   cors: {
     origin: "*",
     methods: ["GET", "POST", "PUT"],
   },
 });
+setRealtimeServer(io);
 
 app.use(cors());
 app.use(express.json());

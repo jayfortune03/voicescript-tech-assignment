@@ -1,5 +1,11 @@
 import { db } from "../db/index.js";
-import { io } from "../index.js";
+import { emitJobUpdated } from "../realtime/events.js";
+
+type Transaction = {
+  oneOrNone<T = any>(query: string, values?: unknown[]): Promise<T | null>;
+  one<T = any>(query: string, values?: unknown[]): Promise<T>;
+  none(query: string, values?: unknown[]): Promise<unknown>;
+};
 
 export const getAllJobs = async (filterStatus?: string) => {
   let query = `SELECT * FROM "Job"`;
@@ -35,35 +41,58 @@ export const assignReporterToJob = async (
   currentVersion: number,
 ) => {
   return db.tx(async (t) => {
-    const job = await t.oneOrNone(`SELECT * FROM "Job" WHERE id = $1`, [jobId]);
-    const reporter = await t.oneOrNone(`SELECT * FROM "User" WHERE id = $1`, [
+    const updatedJob = await assignReporterInTransaction(
+      t,
+      jobId,
       reporterId,
-    ]);
-
-    if (!job || !reporter) throw new Error("NOT_FOUND");
-    if (job.status !== "NEW") throw new Error("JOB_ALREADY_TAKEN");
-
-    if (!reporter.isAvailable) {
-      throw new Error("REPORTER_UNAVAILABLE");
-    }
-
-    const updatedJob = await t.oneOrNone(
-      `UPDATE "Job" 
-       SET "reporterId" = $1, status = 'ASSIGNED', "updatedAt" = NOW(), version = version + 1
-       WHERE id = $2 AND status = 'NEW' AND version = $3
-       RETURNING *`,
-      [reporterId, jobId, currentVersion],
+      currentVersion,
     );
-
-    if (!updatedJob) throw new Error("CONCURRENCY_CONFLICT");
-
-    await t.none(`UPDATE "User" SET "isAvailable" = false WHERE id = $1`, [
-      reporterId,
-    ]);
-
-    io.emit("jobUpdated", { action: "REPORTER_ASSIGNED", job: updatedJob });
+    emitJobUpdated({ action: "REPORTER_ASSIGNED", job: updatedJob });
     return updatedJob;
   });
+};
+
+export const claimAvailableUser = async (
+  t: Transaction,
+  userId: string,
+  role: "REPORTER" | "EDITOR",
+) => {
+  return t.oneOrNone(
+    `UPDATE "User"
+     SET "isAvailable" = false
+     WHERE id = $1 AND role = $2 AND "isAvailable" = true
+     RETURNING *`,
+    [userId, role],
+  );
+};
+
+export const assignReporterInTransaction = async (
+  t: Transaction,
+  jobId: string,
+  reporterId: string,
+  currentVersion: number,
+) => {
+  const job = await t.oneOrNone(`SELECT * FROM "Job" WHERE id = $1`, [jobId]);
+
+  if (!job) throw new Error("NOT_FOUND");
+  if (job.status !== "NEW") throw new Error("JOB_ALREADY_TAKEN");
+
+  const reporter = await claimAvailableUser(t, reporterId, "REPORTER");
+  if (!reporter) {
+    throw new Error("REPORTER_UNAVAILABLE");
+  }
+
+  const updatedJob = await t.oneOrNone(
+    `UPDATE "Job" 
+     SET "reporterId" = $1, status = 'ASSIGNED', "updatedAt" = NOW(), version = version + 1
+     WHERE id = $2 AND status = 'NEW' AND version = $3
+     RETURNING *`,
+    [reporterId, jobId, currentVersion],
+  );
+
+  if (!updatedJob) throw new Error("CONCURRENCY_CONFLICT");
+
+  return updatedJob;
 };
 
 export const assignEditorToJob = async (
@@ -72,28 +101,37 @@ export const assignEditorToJob = async (
   currentVersion: number,
 ) => {
   return db.tx(async (t) => {
-    const editor = await t.oneOrNone(`SELECT * FROM "User" WHERE id = $1`, [
+    const updatedJob = await assignEditorInTransaction(
+      t,
+      jobId,
       editorId,
-    ]);
-    if (!editor || !editor.isAvailable) throw new Error("EDITOR_UNAVAILABLE");
-
-    const updatedJob = await t.oneOrNone(
-      `UPDATE "Job" 
-       SET "editorId" = $1, status = 'IN_REVIEW', "updatedAt" = NOW(), version = version + 1
-       WHERE id = $2 AND status = 'TRANSCRIBED' AND version = $3
-       RETURNING *`,
-      [editorId, jobId, currentVersion],
+      currentVersion,
     );
-
-    if (!updatedJob) throw new Error("CONCURRENCY_CONFLICT_OR_INVALID_STATUS");
-
-    await t.none(`UPDATE "User" SET "isAvailable" = false WHERE id = $1`, [
-      editorId,
-    ]);
-
-    io.emit("jobUpdated", { action: "EDITOR_ASSIGNED", job: updatedJob });
+    emitJobUpdated({ action: "EDITOR_ASSIGNED", job: updatedJob });
     return updatedJob;
   });
+};
+
+export const assignEditorInTransaction = async (
+  t: Transaction,
+  jobId: string,
+  editorId: string,
+  currentVersion: number,
+) => {
+  const editor = await claimAvailableUser(t, editorId, "EDITOR");
+  if (!editor) throw new Error("EDITOR_UNAVAILABLE");
+
+  const updatedJob = await t.oneOrNone(
+    `UPDATE "Job" 
+     SET "editorId" = $1, status = 'IN_REVIEW', "updatedAt" = NOW(), version = version + 1
+     WHERE id = $2 AND status = 'TRANSCRIBED' AND version = $3
+     RETURNING *`,
+    [editorId, jobId, currentVersion],
+  );
+
+  if (!updatedJob) throw new Error("CONCURRENCY_CONFLICT_OR_INVALID_STATUS");
+
+  return updatedJob;
 };
 
 const allowedTransitions: Record<string, string[]> = {
@@ -154,7 +192,7 @@ export const updateJobStatus = async (
     ]);
   }
 
-  io.emit("jobUpdated", { action: "STATUS_UPDATED", job: updatedJob });
+  emitJobUpdated({ action: "STATUS_UPDATED", job: updatedJob });
   return updatedJob;
 };
 
@@ -197,7 +235,7 @@ export const calculateAndSavePayment = async (jobId: string) => {
       [jobId],
     );
 
-    io.emit("jobUpdated", {
+    emitJobUpdated({
       action: "JOB_COMPLETED_AND_PAID",
       job: completedJob,
     });
@@ -221,6 +259,6 @@ export const markJobAsTranscribed = async (
     throw new Error("CONCURRENCY_CONFLICT_OR_INVALID_STATUS");
   }
 
-  io.emit("jobUpdated", { action: "JOB_TRANSCRIBED", job: updatedJob });
+  emitJobUpdated({ action: "JOB_TRANSCRIBED", job: updatedJob });
   return updatedJob;
 };
