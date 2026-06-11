@@ -4,6 +4,7 @@ import {
   assignEditorInTransaction,
   assignReporterInTransaction,
   claimAvailableUser,
+  completeReviewedJobAndSavePayments,
 } from "../src/services/jobService.js";
 
 type Call = {
@@ -116,4 +117,41 @@ test("assignEditorInTransaction uses transcribed status and version guard", asyn
     /WHERE id = \$2 AND status = 'TRANSCRIBED' AND version = \$3/,
   );
   assert.deepEqual(tx.calls[1].values, ["edit-1", "job-1", 4]);
+});
+
+test("completeReviewedJobAndSavePayments completes reviewed job before inserting payments", async () => {
+  const completedJob = {
+    id: "job-1",
+    status: "COMPLETED",
+    duration: 20,
+    reporterId: "rep-1",
+    editorId: "edit-1",
+    version: 6,
+  };
+  const tx = new FakeTransaction([completedJob]);
+
+  const result = await completeReviewedJobAndSavePayments(tx, "job-1");
+
+  assert.deepEqual(result, completedJob);
+  assert.equal(tx.calls.length, 5);
+  assert.match(tx.calls[0].query, /UPDATE "Job"/);
+  assert.match(tx.calls[0].query, /WHERE id = \$1 AND status = 'REVIEWED'/);
+  assert.match(tx.calls[0].query, /version = version \+ 1/);
+  assert.match(tx.calls[1].query, /INSERT INTO "Payment"/);
+  assert.deepEqual(tx.calls[1].values, ["job-1", "rep-1", 40000]);
+  assert.match(tx.calls[3].query, /INSERT INTO "Payment"/);
+  assert.deepEqual(tx.calls[3].values, ["job-1", "edit-1", 50000]);
+});
+
+test("completeReviewedJobAndSavePayments rejects duplicate or invalid payment attempts before inserts", async () => {
+  const tx = new FakeTransaction([null]);
+
+  await assert.rejects(
+    () => completeReviewedJobAndSavePayments(tx, "job-1"),
+    /JOB_NOT_REVIEWED/,
+  );
+
+  assert.equal(tx.calls.length, 1);
+  assert.match(tx.calls[0].query, /UPDATE "Job"/);
+  assert.match(tx.calls[0].query, /WHERE id = \$1 AND status = 'REVIEWED'/);
 });

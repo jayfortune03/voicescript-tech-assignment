@@ -198,49 +198,58 @@ export const updateJobStatus = async (
 
 export const calculateAndSavePayment = async (jobId: string) => {
   return db.tx(async (t) => {
-    const job = await t.one(`SELECT * FROM "Job" WHERE id = $1`, [jobId]);
-
-    if (job.status !== "REVIEWED") {
-      throw new Error("JOB_NOT_REVIEWED");
-    }
-
-    const RATE_PER_MIN = 2000;
-    const EDITOR_FLAT_FEE = 50000;
-    const reporterAmount = job.duration * RATE_PER_MIN;
-
-    if (job.reporterId) {
-      await t.none(
-        `INSERT INTO "Payment" ("id", "jobId", "userId", "amount", "role", "createdAt") 
-         VALUES (gen_random_uuid(), $1, $2, $3, 'REPORTER', NOW())`,
-        [job.id, job.reporterId, reporterAmount],
-      );
-      await t.none(`UPDATE "User" SET "isAvailable" = true WHERE id = $1`, [
-        job.reporterId,
-      ]);
-    }
-
-    if (job.editorId) {
-      await t.none(
-        `INSERT INTO "Payment" ("id", "jobId", "userId", "amount", "role", "createdAt") 
-         VALUES (gen_random_uuid(), $1, $2, $3, 'EDITOR', NOW())`,
-        [job.id, job.editorId, EDITOR_FLAT_FEE],
-      );
-      await t.none(`UPDATE "User" SET "isAvailable" = true WHERE id = $1`, [
-        job.editorId,
-      ]);
-    }
-
-    const completedJob = await t.one(
-      `UPDATE "Job" SET status = 'COMPLETED', "updatedAt" = NOW() WHERE id = $1 RETURNING *`,
-      [jobId],
-    );
-
+    const completedJob = await completeReviewedJobAndSavePayments(t, jobId);
     emitJobUpdated({
       action: "JOB_COMPLETED_AND_PAID",
       job: completedJob,
     });
     return { job: completedJob };
   });
+};
+
+export const completeReviewedJobAndSavePayments = async (
+  t: Transaction,
+  jobId: string,
+) => {
+  const completedJob = await t.oneOrNone(
+    `UPDATE "Job"
+     SET status = 'COMPLETED', "updatedAt" = NOW(), version = version + 1
+     WHERE id = $1 AND status = 'REVIEWED'
+     RETURNING *`,
+    [jobId],
+  );
+
+  if (!completedJob) {
+    throw new Error("JOB_NOT_REVIEWED");
+  }
+
+  const RATE_PER_MIN = 2000;
+  const EDITOR_FLAT_FEE = 50000;
+  const reporterAmount = completedJob.duration * RATE_PER_MIN;
+
+  if (completedJob.reporterId) {
+    await t.none(
+      `INSERT INTO "Payment" ("id", "jobId", "userId", "amount", "role", "createdAt")
+       VALUES (gen_random_uuid(), $1, $2, $3, 'REPORTER', NOW())`,
+      [completedJob.id, completedJob.reporterId, reporterAmount],
+    );
+    await t.none(`UPDATE "User" SET "isAvailable" = true WHERE id = $1`, [
+      completedJob.reporterId,
+    ]);
+  }
+
+  if (completedJob.editorId) {
+    await t.none(
+      `INSERT INTO "Payment" ("id", "jobId", "userId", "amount", "role", "createdAt")
+       VALUES (gen_random_uuid(), $1, $2, $3, 'EDITOR', NOW())`,
+      [completedJob.id, completedJob.editorId, EDITOR_FLAT_FEE],
+    );
+    await t.none(`UPDATE "User" SET "isAvailable" = true WHERE id = $1`, [
+      completedJob.editorId,
+    ]);
+  }
+
+  return completedJob;
 };
 
 export const markJobAsTranscribed = async (
