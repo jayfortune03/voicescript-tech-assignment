@@ -63,7 +63,7 @@ const statusLabels: Record<JobStatus, string> = {
   NEW: "New",
   ASSIGNED: "Assigned",
   TRANSCRIBED: "Transcribed",
-  IN_REVIEW: "In review",
+  IN_REVIEW: "Review assigned",
   REVIEWED: "Reviewed",
   COMPLETED: "Completed",
 };
