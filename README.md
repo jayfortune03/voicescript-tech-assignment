@@ -2,6 +2,22 @@
 
 Court Reporting Workflow Manager for managing transcription jobs, reporter/editor assignments, status tracking, realtime updates, and payout calculation.
 
+## Demo Media
+
+The GIF below shows the role-based dashboard, assignment flow, status updates, and realtime refresh behavior.
+
+![Court reporting workflow demo](docs/demo/workflow-demo.gif)
+
+If the GIF does not load in your Markdown preview, open the source video directly:
+
+[Watch the workflow demo video](docs/demo/workflow-demo.mov)
+
+Screenshots:
+
+| Admin Dashboard | Reporter Dashboard | Editor Dashboard |
+| --- | --- | --- |
+| ![Admin dashboard](docs/demo/admin-dashboard.png) | ![Reporter dashboard](docs/demo/reporter-dashboard.png) | ![Editor dashboard](docs/demo/editor-dashboard.png) |
+
 ## Project Structure
 
 ```text
@@ -23,6 +39,7 @@ The assessment lists `NEW -> ASSIGNED -> TRANSCRIBED -> REVIEWED -> COMPLETED`. 
 ## Roles
 
 Admin:
+
 - Creates jobs.
 - Assigns reporters to `NEW` jobs.
 - Assigns editors after transcription.
@@ -30,12 +47,14 @@ Admin:
 - Sees reporter/editor availability.
 
 Reporter:
+
 - Sees only jobs assigned to them.
 - Marks assigned jobs as `TRANSCRIBED`.
 - Becomes available again after transcription is submitted.
 - Sees per-job reporter earnings.
 
 Editor:
+
 - Sees only review jobs assigned to them.
 - Marks review jobs as `REVIEWED`.
 - Becomes available again after review is submitted.
@@ -44,12 +63,14 @@ Editor:
 ## Assignment Rules
 
 Reporter assignment:
+
 - Reporters have name, city, role, and availability.
 - Physical jobs include a city.
 - Same-city reporters are preferred and listed first.
 - Remote assignment is still allowed, so admin can assign any available reporter.
 
 Concurrency protection:
+
 - Job updates use optimistic versioning.
 - Assignment also atomically claims the reporter/editor availability row.
 - This prevents two admins from assigning the same job or same staff member at the same time.
@@ -165,6 +186,7 @@ npm test
 ```
 
 The tests cover:
+
 - Atomic reporter/editor claiming.
 - Version-guarded reporter assignment.
 - Version-guarded editor assignment.
