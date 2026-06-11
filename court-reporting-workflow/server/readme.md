@@ -53,3 +53,11 @@ The API will be available at:
 ```text
 http://localhost:3004
 ```
+
+## 7. Run Tests
+
+```bash
+npm test
+```
+
+The service tests cover atomic reporter/editor claiming and version-guarded assignment updates.
