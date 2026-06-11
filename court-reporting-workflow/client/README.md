@@ -67,3 +67,4 @@ Status updates send the job `version` with the request. The backend checks that 
 - Reporter earnings: `duration x 2000 IDR`
 - Editor earnings: `50000 IDR` flat fee per reviewed job
 - Admin payout view: reporter earnings plus editor earnings for each job
+- Payment processing is guarded by the backend workflow transition, so a completed job cannot create duplicate payment rows.
