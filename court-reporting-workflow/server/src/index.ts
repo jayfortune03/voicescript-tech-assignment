@@ -3,6 +3,7 @@ import { createServer } from "http";
 import { Server } from "socket.io";
 import cors from "cors";
 import dotenv from "dotenv";
+import jobRoutes from "./routes/jobRoutes.js";
 
 dotenv.config();
 
@@ -18,6 +19,7 @@ export const io = new Server(httpServer, {
 
 app.use(cors());
 app.use(express.json());
+app.use("/api/jobs", jobRoutes);
 
 // Socket.io connection listener
 io.on("connection", (socket) => {
